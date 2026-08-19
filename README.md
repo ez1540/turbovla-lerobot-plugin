@@ -1,2 +1,267 @@
-# turbovla-lerobot-plugin
-A plugin for lerobot training that uses turbovla
+# lerobot_policy_turbovla
+
+TurboVLA as a standalone [LeRobot](https://github.com/huggingface/lerobot) policy plugin.
+
+```bash
+lerobot-train --policy.type=act       ...   # before
+lerobot-train --policy.type=turbovla  ...   # after
+```
+
+Everything else in the workflow — record, train, rollout — stays identical. This is not a LeRobot
+fork and it does not ship its own training loop: it registers a policy and lets `lerobot-train`
+drive it.
+
+## Why TurboVLA instead of ACT
+
+Same ergonomics as ACT (chunked continuous actions, parallel decode, L1 loss), but language
+conditioned:
+
+|                    | ACT                   | TurboVLA                            |
+| ------------------ | --------------------- | ----------------------------------- |
+| Language           | none                  | BERT token-level, fused into vision |
+| Visual backbone    | ResNet18              | DINOv3 ViT-B                        |
+| Action decode      | parallel chunk queries| parallel chunk queries (same idea)  |
+| Params             | ~80M                  | ~0.2B                               |
+
+The practical win on a multi-task arm dataset: ACT ignores the task string, so you need one
+checkpoint per task. TurboVLA conditions on it, so one checkpoint can cover many tasks in the same
+dataset.
+
+Upstream research code: <https://github.com/H-EmbodVis/TurboVLA> · paper
+[arXiv:2607.27205](https://arxiv.org/abs/2607.27205). Only the modules were ported here, not the
+harness — upstream is built around its own trainer, TFDS/RLDS for LIBERO, and a `flash-attn`
+dependency this package deliberately avoids.
+
+## Architecture
+
+```
+images (N cams) ──> DINOv3 ViT ──> proj to d=256 ─┐
+                    + patch pos emb               │
+                    + camera-view emb             ├─> N=6 bidirectional
+                                                  │   cross-attention layers
+instruction ──────> BERT base uncased ─> proj ────┘   (LN + xattn + FFN, residual)
+                    (token-level, NOT pooled)          │
+                                                       v
+                                         ACT-style transformer decoder
+                                         H learnable action queries, decoded
+                                         in parallel in one forward pass
+                                                       │
+                                                       v
+                                          continuous chunk (H, action_dim)
+```
+
+The pieces that matter:
+
+- **Bidirectional fusion.** Both directions run every layer: vision→text injects scene context,
+  text→vision conditions patch features on task semantics. Both read the same pre-update snapshot,
+  so the updates are simultaneous rather than chained. The paper's ablation puts bidirectional at
+  97.7% against 96.1–96.5% for one-way, so this is not a detail to simplify away.
+- **Token-level language**, not a pooled sentence embedding — that is what preserves object,
+  attribute and spatial-relation grounding.
+- **Camera-view embeddings** distinguish which camera a patch came from, needed as soon as there is
+  more than one camera.
+- **Plain L1** on the action chunk. No VAE and no KL term, so ACT's `use_vae` / `latent_dim` /
+  `kl_weight` have no analogue here.
+- All attention goes through `torch.nn.functional.scaled_dot_product_attention`. No `flash-attn`.
+
+## Install
+
+Requires Python ≥ 3.12 and a working `torch` install of your choosing.
+
+```bash
+pip install -e . --no-deps       # then make sure lerobot>=0.6.0 and transformers>=5.4 are present
+```
+
+`--no-deps` is the recommended install when you are on a torch build that pip cannot reproduce (a
+ROCm or CUDA nightly, a source build). This package never declares a `torch` dependency for exactly
+that reason, but `lerobot` itself does, and a plain `pip install` will happily pull a different
+torch over the one you have. Install `lerobot` and `transformers` yourself, then install this with
+`--no-deps`.
+
+Verify discovery:
+
+```bash
+python -c "
+from lerobot.utils.import_utils import register_third_party_plugins
+from lerobot.configs import PreTrainedConfig
+register_third_party_plugins()
+assert 'turbovla' in PreTrainedConfig.get_known_choices()
+print('ok')"
+```
+
+Discovery works by distribution-name prefix: LeRobot walks installed distributions and imports every
+one whose name starts with `lerobot_policy_`. There is no entry-point group to declare — but it does
+mean the distribution name must stay `lerobot_policy_turbovla`.
+
+### The DINOv3 weights are gated
+
+The default `facebook/dinov3-vitb16-pretrain-lvd1689m` is a **gated** repo. Accept the terms on the
+model page, then authenticate:
+
+```bash
+hf auth login          # or: export HF_TOKEN=...
+```
+
+Without that you get a 401 at model construction. Three ways around it:
+
+```bash
+# 1. Use an ungated backbone instead (any patch-based ViT that AutoModel can load).
+--policy.vision_backbone=facebook/dinov2-base
+
+# 2. Skip pretrained weights entirely — random init, for smoke tests only.
+--policy.load_pretrained_backbones=false
+```
+
+## Train
+
+### Local
+
+```bash
+lerobot-train \
+  --dataset.repo_id=${HF_USER}/so101_pickplace \
+  --policy.type=turbovla \
+  --policy.device=cuda \
+  --batch_size=64 \
+  --steps=80000 \
+  --output_dir=outputs/train/turbovla_so101 \
+  --job_name=turbovla_so101 \
+  --wandb.enable=true
+```
+
+Point `--dataset.repo_id` at any community LeRobot dataset to smoke-test the policy before a robot
+is involved. On ROCm the device string is still `cuda` — ROCm PyTorch masquerades as CUDA.
+
+### Multi-GPU
+
+`lerobot-train` supports `torchrun --nproc_per_node=N`, and `--batch_size` is then per rank (two
+ranks at 128 give the global 256 of the paper's LIBERO recipe). Nothing in this policy is
+single-device specific.
+
+Be aware that multi-GPU needs working GPU collectives (NCCL/RCCL), which are a property of your
+PyTorch build rather than of this package. Verify with a bare all-reduce before committing to a long
+run — if that fails, so will any distributed training, for any policy. Single-GPU training is
+unaffected; raise `--batch_size` to reach a comparable effective batch.
+
+### Hugging Face Jobs
+
+Nothing in this package is ROCm-specific, so the identical command runs on a rented NVIDIA box:
+
+```bash
+lerobot-train \
+  --dataset.repo_id=${HF_USER}/so101_pickplace \
+  --policy.type=turbovla \
+  --policy.repo_id=${HF_USER}/turbovla-so101 \
+  --job.target=a10g-small \
+  --save_checkpoint_to_hub=true
+```
+
+Resume works the same everywhere:
+
+```bash
+lerobot-train --config_path=${HF_USER}/turbovla-so101 --resume=true
+```
+
+## Configuration
+
+Defaults follow the paper's LIBERO recipe, which is also a sane starting point for SO-101 real-arm
+data: 6-DoF + gripper is close to the 7-D case, and `chunk_size=12` at 30 fps is a reasonable chunk.
+
+| Flag                                   | Default                                    | Notes                                        |
+| -------------------------------------- | ------------------------------------------ | -------------------------------------------- |
+| `--policy.chunk_size`                  | `12`                                       | `H`, the number of action queries             |
+| `--policy.n_action_steps`              | `12`                                       | steps executed per model call; ≤ `chunk_size` |
+| `--policy.dim_model`                   | `256`                                      | shared width `d`                              |
+| `--policy.n_fusion_layers`             | `6`                                        | `N` bidirectional layers                      |
+| `--policy.n_decoder_layers`            | `4`                                        | action decoder depth                          |
+| `--policy.vision_backbone`             | `facebook/dinov3-vitb16-pretrain-lvd1689m` | gated; see above                              |
+| `--policy.language_backbone`           | `google-bert/bert-base-uncased`            | swappable (paper: T5-small 97.1%)             |
+| `--policy.freeze_vision_backbone`      | `true`                                     | dominates VRAM and final quality              |
+| `--policy.freeze_language_backbone`    | `true`                                     | as above                                      |
+| `--policy.load_pretrained_backbones`   | `true`                                     | `false` = random init, smoke tests only       |
+| `--policy.image_size`                  | `224`                                      | must divide by the backbone's patch size      |
+| `--policy.optimizer_lr`                | `5e-5`                                     | peak LR for the trunk                         |
+| `--policy.optimizer_lr_backbone`       | `5e-6`                                     | ignored while backbones are frozen            |
+
+For the paper's RoboTwin recipe, raise `--policy.chunk_size=50` and switch to a ViT-L backbone.
+
+## Dataset requirements
+
+- At least one `observation.images.*` key. Several are treated as multiple camera views, each
+  getting its own camera-view embedding; they must share a shape.
+- `observation.state` is optional — when present it is carried as one extra token into the fusion.
+- `action` is required.
+- **A task string is required.** It arrives as `task` in the batch and is the entire point of this
+  policy; `forward` raises if it is missing rather than quietly training a mute model.
+
+## Benchmarks and evaluation
+
+`benchmarks/` holds dataset-agnostic tooling for comparing this policy against others. Nothing in it
+is specific to a particular dataset or robot — pass a different `--dataset` and it works.
+
+**Inference latency** (`bench_latency.py`) — no dataset and no training required; it builds each
+policy from its config and times `predict_action_chunk` on synthetic inputs of matched shape.
+
+```bash
+python benchmarks/bench_latency.py --policies turbovla act smolvla --resolution 224
+```
+
+Reports per-chunk and per-env-step latency, VRAM, and parameter count. See the module docstring for
+the protocol (warmup, synchronization, median-not-mean) and for why quoting only the amortized
+per-step number is the flattering half of the story.
+
+**Held-out action error, per task** (`eval_per_task.py`) — recomputes the same train/eval episode
+split `lerobot-train` uses, then scores any number of checkpoints on the held-out frames.
+
+```bash
+python benchmarks/eval_per_task.py \
+    --dataset <hub-id> --eval-split 0.2 --resize 224 \
+    --checkpoint turbovla=outputs/a/checkpoints/last/pretrained_model \
+    --checkpoint act=outputs/b/checkpoints/last/pretrained_model
+```
+
+Results are broken out per task rather than reduced to one number, because a multi-task dataset
+mixes tasks a language-blind policy can solve from pixels with tasks it cannot, and averaging lets
+the first kind hide the second.
+
+**Counterfactual instruction test** (`eval_instruction_sensitivity.py`) — the direct test of whether
+a policy uses the instruction at all. It runs the policy twice on identical pixels, once with the
+recorded instruction and once with a paired one, and reports whether swapping the sentence actually
+costs accuracy. A policy with no language input scores exactly zero divergence, which doubles as a
+sanity check on the harness.
+
+```bash
+python benchmarks/eval_instruction_sensitivity.py \
+    --dataset <hub-id> --eval-split 0.2 --resize 224 \
+    --checkpoint turbovla=outputs/a/checkpoints/last/pretrained_model \
+    --pair "put the block in the blue bin" "put the block in the green bin"
+```
+
+The `--pair` arguments are the one thing you must supply per dataset: only you know which tasks
+share a scene and differ solely in the sentence. Automatic detection is deliberately not trusted
+here — a pair differing by a *visible* attribute is still solvable from pixels and would pollute the
+result.
+
+**Equalizing input resolution** (`resize224.yaml` + `train_with_yaml.py`) — when comparing against a
+policy whose backbone consumes native resolution, equalize it so the comparison isolates the
+variable you care about:
+
+```bash
+python benchmarks/train_with_yaml.py benchmarks/resize224.yaml \
+    --dataset.repo_id=<hub-id> --policy.type=act --eval_steps=0 ...
+```
+
+Read that file's header before using it: LeRobot applies image transforms to the training dataset
+only, so a run using the overlay must set `--eval_steps=0` and evaluate with `eval_per_task.py`
+instead.
+
+## Tests
+
+```bash
+pytest -q
+```
+
+The tests build a tiny randomly initialized model, so they need no Hub access and no GPU.
+
+## License
+
+Apache-2.0.
