@@ -33,21 +33,8 @@ dependency this package avoids.
 
 ## Architecture
 
-```
-images (N cams) ──> DINOv3 ViT ──> proj to d=256 ─┐
-                    + patch pos emb               │
-                    + camera-view emb             ├─> N=6 bidirectional
-                                                  │   cross-attention layers
-instruction ──────> BERT base uncased ─> proj ────┘   (LN + xattn + FFN, residual)
-                    (token-level, NOT pooled)          │
-                                                       v
-                                         ACT-style transformer decoder
-                                         H learnable action queries, decoded
-                                         in parallel in one forward pass
-                                                       │
-                                                       v
-                                          continuous chunk (H, action_dim)
-```
+<img width="4908" height="1883" alt="image" src="https://github.com/user-attachments/assets/dbed0b59-f91e-40c6-99b5-f1433409768b" />
+
 
 The pieces that matter:
 
