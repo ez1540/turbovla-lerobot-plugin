@@ -66,17 +66,31 @@ The pieces that matter:
 
 ## Install
 
-Requires Python ≥ 3.12 and a working `torch` install of your choosing.
+Requires Python ≥ 3.12.
 
 ```bash
-pip install -e . --no-deps       # then make sure lerobot>=0.6.0 and transformers>=5.4 are present
+pip install lerobot_policy_turbovla
 ```
 
-`--no-deps` is the recommended install when you are on a torch build that pip cannot reproduce (a
-ROCm or CUDA nightly, a source build). This package never declares a `torch` dependency for exactly
-that reason, but `lerobot` itself does, and a plain `pip install` will happily pull a different
-torch over the one you have. Install `lerobot` and `transformers` yourself, then install this with
-`--no-deps`.
+That is all. `lerobot` and `transformers` come along as dependencies, and `--policy.type=turbovla`
+works immediately — see [Train](#train).
+
+### If you are on a torch build pip cannot reproduce
+
+A ROCm build, a nightly, or a source build: install into that environment with `--no-deps`, because
+`lerobot` declares a `torch` requirement and a plain install will happily pull a *different* torch
+over the one you already have.
+
+```bash
+pip install --no-deps lerobot_policy_turbovla
+# then make sure lerobot>=0.6.0 and transformers>=5.4 are present in the environment
+```
+
+This package deliberately never declares a `torch` dependency of its own, precisely so it can be
+installed alongside whatever torch you already trust. pip may print a version-conflict warning about
+`lerobot`'s torch pin afterwards; that is advisory, and the policy runs fine.
+
+To work on the package itself, `pip install -e .` from a clone.
 
 Verify discovery:
 

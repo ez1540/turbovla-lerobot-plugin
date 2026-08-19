@@ -33,7 +33,10 @@ dependencies = [
 test = ["pytest>=8.1.0,<10.0.0"]
 
 [project.urls]
-Homepage = "https://github.com/H-EmbodVis/TurboVLA"
+Homepage = "https://github.com/ez1540/turbovla-lerobot-plugin"
+Repository = "https://github.com/ez1540/turbovla-lerobot-plugin"
+Issues = "https://github.com/ez1540/turbovla-lerobot-plugin/issues"
+"Upstream research code" = "https://github.com/H-EmbodVis/TurboVLA"
 
 [tool.setuptools.packages.find]
 where = ["src"]
