@@ -62,17 +62,41 @@ works immediately — see [Train](#train).
 
 ### If you are on a torch build pip cannot reproduce
 
-A ROCm build, a nightly, or a source build: install into that environment with `--no-deps`, because
-`lerobot` declares a `torch` requirement and a plain install will happily pull a *different* torch
-over the one you already have.
+A ROCm build, a nightly, or a source build. pip cannot re-fetch that torch from PyPI, and `lerobot`
+pins `torch<2.12.0` — so a torch outside that range does not satisfy the pin, and a plain install
+**uninstalls your build and drops a CUDA wheel in its place**, along with ~4 GB of `nvidia-*`
+packages. Install the packages that pin torch with `--no-deps`, and let the rest resolve normally.
 
 ```bash
-pip install --no-deps lerobot_policy_turbovla
-# then make sure lerobot>=0.6.0 and transformers>=5.4 are present in the environment
-```
+# 1. the three packages that pin torch — installed without their dependency graph
+pip install --no-deps lerobot torchcodec lerobot_policy_turbovla
 
-This package deliberately never declares a `torch` dependency of its own, precisely so it can be
-installed alongside whatever torch you are already using.
+# 2. lerobot's remaining dependencies, which are harmless. Derive the list rather
+#    than transcribing it, so it stays correct across lerobot versions:
+python - <<'EOF' > /tmp/deps.txt
+from importlib.metadata import requires
+from packaging.requirements import Requirement
+skip = {"torch", "torchvision", "torchcodec", "triton"}
+for r in requires("lerobot") or []:
+    req = Requirement(r)
+    if (req.marker and not req.marker.evaluate()) or req.name.lower() in skip:
+        continue
+    print(req)
+EOF
+pip install -r /tmp/deps.txt "transformers>=5.4.0,<5.6.0"
+
+# 3. confirm your torch survived
+python -c "import torch; print(torch.__version__)"
+
+pip then prints a dependency-conflict warning about torch<2.12.0. It is advisory; the policy runs
+fine on newer torch.
+
+To make this durable, pin torch in a constraints file so any future pip command in the
+environment fails loudly instead of replacing it:
+
+python -c "import torch, torchvision; print(f'torch=={torch.__version__}\ntorchvision=={torchvision.__version__}')" \
+  > ~/.config/pip/torch-constraints.txt
+export PIP_CONSTRAINT=~/.config/pip/torch-constraints.txt
 
 To work on the package itself, `pip install -e .` from a clone.
 
