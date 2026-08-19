@@ -33,7 +33,7 @@ dependency this package avoids.
 
 ## Architecture
 
-<img width="4908" height="1883" alt="image" src="https://github.com/user-attachments/assets/dbed0b59-f91e-40c6-99b5-f1433409768b" />
+![TurboVLA architecture: DINOv3 vision and BERT language tokens through six bidirectional cross-attention layers into an ACT-style parallel action decoder](https://raw.githubusercontent.com/ez1540/turbovla-lerobot-plugin/main/docs/architecture.png)
 
 Important things:
 
