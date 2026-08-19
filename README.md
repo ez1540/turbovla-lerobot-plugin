@@ -7,8 +7,7 @@ lerobot-train --policy.type=act       ...   # before
 lerobot-train --policy.type=turbovla  ...   # after
 ```
 
-Everything else in the workflow — record, train, rollout — stays identical. This is not a LeRobot
-fork and it does not ship its own training loop: it registers a policy and lets `lerobot-train`
+Everything else in the workflow record, train, rollout stays identical. This registers a policy and lets `lerobot-train`
 drive it.
 
 ## Why TurboVLA instead of ACT
@@ -27,10 +26,10 @@ The practical win on a multi-task arm dataset: ACT ignores the task string, so y
 checkpoint per task. TurboVLA conditions on it, so one checkpoint can cover many tasks in the same
 dataset.
 
-Upstream research code: <https://github.com/H-EmbodVis/TurboVLA> · paper
+Upstream research code: <https://github.com/H-EmbodVis/TurboVLA>; paper
 [arXiv:2607.27205](https://arxiv.org/abs/2607.27205). Only the modules were ported here, not the
-harness — upstream is built around its own trainer, TFDS/RLDS for LIBERO, and a `flash-attn`
-dependency this package deliberately avoids.
+harness. The upstream is built around its own trainer, TFDS/RLDS for LIBERO, and a `flash-attn`
+dependency this package avoids.
 
 ## Architecture
 
@@ -72,7 +71,7 @@ Requires Python ≥ 3.12.
 pip install lerobot_policy_turbovla
 ```
 
-That is all. `lerobot` and `transformers` come along as dependencies, and `--policy.type=turbovla`
+`lerobot` and `transformers` come along as dependencies, and `--policy.type=turbovla`
 works immediately — see [Train](#train).
 
 ### If you are on a torch build pip cannot reproduce
@@ -87,8 +86,7 @@ pip install --no-deps lerobot_policy_turbovla
 ```
 
 This package deliberately never declares a `torch` dependency of its own, precisely so it can be
-installed alongside whatever torch you already trust. pip may print a version-conflict warning about
-`lerobot`'s torch pin afterwards; that is advisory, and the policy runs fine.
+installed alongside whatever torch you are already using.
 
 To work on the package itself, `pip install -e .` from a clone.
 
@@ -103,9 +101,7 @@ assert 'turbovla' in PreTrainedConfig.get_known_choices()
 print('ok')"
 ```
 
-Discovery works by distribution-name prefix: LeRobot walks installed distributions and imports every
-one whose name starts with `lerobot_policy_`. There is no entry-point group to declare — but it does
-mean the distribution name must stay `lerobot_policy_turbovla`.
+The distribution name must stay `lerobot_policy_turbovla`.
 
 ### The DINOv3 weights are gated
 
@@ -122,7 +118,7 @@ Without that you get a 401 at model construction. Three ways around it:
 # 1. Use an ungated backbone instead (any patch-based ViT that AutoModel can load).
 --policy.vision_backbone=facebook/dinov2-base
 
-# 2. Skip pretrained weights entirely — random init, for smoke tests only.
+# 2. Skip pretrained weights entirely — random init for smoke tests only.
 --policy.load_pretrained_backbones=false
 ```
 
@@ -143,7 +139,7 @@ lerobot-train \
 ```
 
 Point `--dataset.repo_id` at any community LeRobot dataset to smoke-test the policy before a robot
-is involved. On ROCm the device string is still `cuda` — ROCm PyTorch masquerades as CUDA.
+is involved. 
 
 ### Multi-GPU
 
@@ -153,7 +149,7 @@ single-device specific.
 
 Be aware that multi-GPU needs working GPU collectives (NCCL/RCCL), which are a property of your
 PyTorch build rather than of this package. Verify with a bare all-reduce before committing to a long
-run — if that fails, so will any distributed training, for any policy. Single-GPU training is
+run. If that fails, so will any distributed training, for any policy. Single-GPU training is
 unaffected; raise `--batch_size` to reach a comparable effective batch.
 
 ### Hugging Face Jobs
