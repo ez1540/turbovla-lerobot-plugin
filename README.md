@@ -35,13 +35,12 @@ dependency this package avoids.
 
 <img width="4908" height="1883" alt="image" src="https://github.com/user-attachments/assets/dbed0b59-f91e-40c6-99b5-f1433409768b" />
 
-
-The pieces that matter:
+Important things:
 
 - **Bidirectional fusion.** Both directions run every layer: vision→text injects scene context,
   text→vision conditions patch features on task semantics. Both read the same pre-update snapshot,
   so the updates are simultaneous rather than chained. The paper's ablation puts bidirectional at
-  97.7% against 96.1–96.5% for one-way, so this is not a detail to simplify away.
+  97.7% against 96.1–96.5% for one-way.
 - **Token-level language**, not a pooled sentence embedding — that is what preserves object,
   attribute and spatial-relation grounding.
 - **Camera-view embeddings** distinguish which camera a patch came from, needed as soon as there is
