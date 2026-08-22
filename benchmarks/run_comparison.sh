@@ -27,6 +27,20 @@ BATCH=64
 SEED=1000
 SAVE_FREQ=500
 
+# Both policies ship schedules written for their paper's full-length run: TurboVLA warms up over
+# 10k steps and decays over 80k (the LIBERO recipe), SmolVLA warms up over 1k and decays over 30k.
+# Left alone at a few thousand steps, TurboVLA would spend the ENTIRE run inside linear warmup --
+# never reaching its peak LR -- while SmolVLA reaches peak at step 1k and trains near it throughout.
+# That is a schedule artifact, and it would show up in the results as an architecture difference.
+#
+# So scale each policy's own schedule to the budget instead of imposing a single shared one: one
+# full cosine cycle inside the budget for both, with each author's warmup *fraction* preserved
+# (TurboVLA 1/8 of the run, SmolVLA 1/30). Peak learning rates are left at the authors' values,
+# since those are tuned to the architecture and are not a function of run length. ACT has no
+# scheduler at all -- a constant LR is its own recipe, and there is nothing to rescale.
+TURBOVLA_WARMUP=$((STEPS / 8))
+SMOLVLA_WARMUP=$((STEPS / 30))
+
 common=(
   --dataset.repo_id="$DATASET"
   --batch_size="$BATCH"
@@ -58,12 +72,16 @@ case "${LANE:-both}" in
     # DINOv3 is gated; dinov2-base is the ungated stand-in, and it is already cached locally.
     run 0 turbovla \
       --policy.type=turbovla \
-      --policy.vision_backbone=facebook/dinov2-base
+      --policy.vision_backbone=facebook/dinov2-base \
+      --policy.scheduler_warmup_steps="$TURBOVLA_WARMUP" \
+      --policy.scheduler_decay_steps="$STEPS"
     ;;
   gpu1)
     run 1 smolvla \
       --policy.type=smolvla \
-      --policy.load_vlm_weights=true
+      --policy.load_vlm_weights=true \
+      --policy.scheduler_warmup_steps="$SMOLVLA_WARMUP" \
+      --policy.scheduler_decay_steps="$STEPS"
     run 1 act --policy.type=act
     ;;
   both)
