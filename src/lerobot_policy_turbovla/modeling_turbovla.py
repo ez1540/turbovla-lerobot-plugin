@@ -35,6 +35,7 @@ trainer, TFDS/RLDS for LIBERO, and a `flash-attn` dependency. Here `lerobot-trai
 everything and all attention goes through `scaled_dot_product_attention`.
 """
 
+import logging
 from collections import deque
 from typing import Unpack
 
@@ -239,6 +240,15 @@ class TurboVLA(nn.Module):
                 # (B, T, C, H, W) with n_obs_steps == 1 -> take the current frame.
                 images = images[:, 0]
 
+            # This policy normalizes VISUAL as IDENTITY, so the preprocessor hands frames over in
+            # whatever dtype the dataset stored them in, and converting them is our job. uint8 is a
+            # normal LeRobot pattern (`LeRobotDataset(..., return_uint8=True)`), and it has to be
+            # handled here for two separate reasons: bilinear interpolation has no uint8 kernel, and
+            # the ImageNet statistics applied below assume a [0, 1] range, so raw [0, 255] values
+            # would come out as garbage rather than as an error.
+            if not images.is_floating_point():
+                images = images.float() / 255.0
+
             if images.shape[-2:] != (self.config.image_size, self.config.image_size):
                 images = F.interpolate(
                     images,
@@ -354,6 +364,26 @@ def _require_transformers():
         ) from e
 
 
+def _fallback_vision_config(config: TurboVLAConfig):
+    """A ViT-B/16 architecture spec built locally, with no Hub access.
+
+    `load_pretrained_backbones=False` exists so the policy can be built without downloading
+    anything — the smoke-test path, and the only one available behind a gated repo or with no
+    network. DINOv3 ViT-B and DINOv2-base share ViT-B/16 geometry, so hardcoding it here keeps
+    tensor shapes and parameter counts faithful without asking the Hub what they are.
+    """
+    from transformers import Dinov2Config
+
+    return Dinov2Config(
+        hidden_size=768,
+        num_hidden_layers=12,
+        num_attention_heads=12,
+        intermediate_size=3072,
+        patch_size=16,
+        image_size=config.image_size,
+    )
+
+
 def _load_vision_backbone(config: TurboVLAConfig) -> tuple[nn.Module, int, int]:
     """Returns `(module, hidden_width, patch_size)`."""
     _require_transformers()
@@ -361,12 +391,35 @@ def _load_vision_backbone(config: TurboVLAConfig) -> tuple[nn.Module, int, int]:
 
     try:
         backbone_config = AutoConfig.from_pretrained(config.vision_backbone)
-        if config.load_pretrained_backbones:
-            model = AutoModel.from_pretrained(config.vision_backbone)
-        else:
-            model = AutoModel.from_config(backbone_config)
     except OSError as e:
-        raise OSError(f"Could not load vision backbone '{config.vision_backbone}'. {_GATED_BACKBONE_HINT}") from e
+        # With pretrained weights requested there is nothing to fall back to: the weights are the
+        # point of the request.
+        if config.load_pretrained_backbones:
+            raise OSError(
+                f"Could not load vision backbone '{config.vision_backbone}'. {_GATED_BACKBONE_HINT}"
+            ) from e
+        # Without them, failing here would contradict the very flag the message above tells users
+        # to set. Fetching the architecture config is still a Hub round trip, so a gated repo or an
+        # offline machine breaks the documented smoke-test path unless we build the spec locally.
+        logging.warning(
+            "Could not fetch the architecture config for %r (%s). Falling back to a local ViT-B/16 "
+            "spec, because `load_pretrained_backbones=False` promises a build with no Hub access. "
+            "Layer shapes and parameter counts match a ViT-B backbone, but this is a stand-in for "
+            "smoke tests — do not report measurements taken on it as the real backbone.",
+            config.vision_backbone,
+            type(e).__name__,
+        )
+        backbone_config = _fallback_vision_config(config)
+
+    if config.load_pretrained_backbones:
+        try:
+            model = AutoModel.from_pretrained(config.vision_backbone)
+        except OSError as e:
+            raise OSError(
+                f"Could not load vision backbone '{config.vision_backbone}'. {_GATED_BACKBONE_HINT}"
+            ) from e
+    else:
+        model = AutoModel.from_config(backbone_config)
 
     patch_size = getattr(backbone_config, "patch_size", None)
     if patch_size is None:
